@@ -5,11 +5,13 @@
 """
 import matplotlib.pyplot as plt
 import rasterio
+import rasterio.crs
 import numpy as np
 import warnings
 import os
 import pyproj
 import logging
+from shapely.geometry import Polygon
 from osgeo import osr, gdal
 from typing import Any, List, Optional
 from astropy.time import Time
@@ -31,11 +33,12 @@ class cRasterInfo(BaseRasterInfo):
         self.band_number = self.raster.count
         self.raster_type = self.raster.dtypes
         self.no_data = self.raster.nodata  # src.nodatavals
-        self.bands_description= self.raster.descriptions
+        self.bands_description = self.raster.descriptions
         try:
             self.valid_map_info = True
             self.proj = self.raster.crs.wkt
-            self.epsg_code = int(str(self.raster.crs).split(":")[1])
+            # self.epsg_code = int(str(self.raster.crs).split(":")[1])
+            self.epsg_code = self.raster.crs.to_epsg()
         except:
             self.valid_map_info = False
             self.proj = None
@@ -328,8 +331,21 @@ class cRasterInfo(BaseRasterInfo):
         raster = None
         return (xMap, yMap)
 
+    def raster_dims(self):
+
+        ds = rasterio.open(self.get_raster_path)
+        bounds = ds.bounds
+        raster_map_dims = [bounds.left, bounds.right, bounds.bottom, bounds.top]
+
+        x0, y0 = self.Map2Pixel(x=bounds.left, y=bounds.bottom)
+        xf, yf = self.Map2Pixel(x=bounds.right, y=bounds.top)
+        # imgDimsPix = {"x0Pix": int(x0), "xfPix": int(xf), "y0Pix": int(y0), "yfPix": int(yf)}
+        raster_pix_dims = [int(x0), int(xf), int(y0), int(yf)]
+        # return list(imgDimsMap.values()), list(imgDimsPix.values())
+        return raster_pix_dims, raster_map_dims
+
     def __repr__(self):
-        # TODO: same as RFM
+        # TODO
         pass
 
     def __str__(self):
@@ -685,6 +701,14 @@ class Convert:
         else:
             return transformer.transform(X, Y, Z)
 
+    @staticmethod
+    def polygon(input_polygon: Polygon, source_epsg_code: int, target_epsg_code: int) -> Polygon:
+        import geopandas
+        shp_df = geopandas.GeoDataFrame({'geometry': [input_polygon]}, crs=rasterio.crs.CRS.from_epsg(source_epsg_code))
+        shp_df = shp_df.to_crs(rasterio.crs.CRS.from_epsg(target_epsg_code))
+
+        return shp_df['geometry'][0]
+
 
 def multi_bands_form_multi_rasters(raster_list: List, output_path: str, no_data: Optional[float] = None,
                                    mask_vls: Optional[List] = None) -> str:
@@ -720,7 +744,7 @@ def multi_bands_form_multi_rasters(raster_list: List, output_path: str, no_data:
 
 
 class geoStat:
-    def __init__(self, in_array: np.ndarray, display_values: Optional[bool] = True):
+    def __init__(self, in_array: np.ndarray, display_values: Optional[bool] = False):
         sample = np.ma.masked_invalid(in_array)
         mask = np.ma.getmask(sample)
 
@@ -757,6 +781,9 @@ class geoStat:
                   "mad=",
                   self.mad, "nmad=", self.nmad)
             print("CE68=", self.ce68, "CE90=", self.ce90, "CE95=", self.ce95, "CE99=", self.ce99)
+
+    def __repr__(self):
+        return "mu:{} , sigm:{} , RMSE:{}, CE90:{}".format(self.mu, self.sigma, self.RMSE, self.ce90)
 
 
 def crop_raster(input_raster, roi_coord_wind, output_dir: Optional[str] = None, vrt=False,
@@ -799,7 +826,7 @@ def compute_rasters_overlap(rasters: List[str]):
     return overlap_area
 
 
-def merge_tiles(in_tiles:List, o_file):
+def merge_tiles(in_tiles: List, o_file):
     from rasterio.merge import merge
 
     src_files_to_mosaic = []
@@ -819,7 +846,7 @@ def merge_tiles(in_tiles:List, o_file):
     print(in_tiles[0])
     rasterInfo = cRasterInfo(in_tiles[0])
     print(in_tiles[0])
-    descriptions = rasterInfo. bands_description  # rasterTemp["BandInfo"]
+    descriptions = rasterInfo.bands_description  # rasterTemp["BandInfo"]
     listArrays = []
     for id in range(mosaic.shape[0]):
         with rasterio.open(o_file, "w", **out_meta) as dest:
